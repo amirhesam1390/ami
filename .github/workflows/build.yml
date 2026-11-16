@@ -18,41 +18,42 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Locate existing Android SDK
+      - name: [A] Locate SDK + sdkmanager
         run: |
-          set -e
-          # گیت‌هاب رانر از قبل SDK را در /usr/local/lib/android/sdk دارد
+          set -x
           SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           echo "SDK=$SDK"
           ls "$SDK" || true
           echo "ANDROID_HOME=$SDK" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$SDK" >> $GITHUB_ENV
-          # sdkmanager پیش‌نصب شده
           SM=$(find "$SDK/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -1)
           echo "SDKMANAGER=$SM"
           [ -n "$SM" ] || { echo "sdkmanager پیدا نشد"; exit 1; }
           echo "SDKMANAGER=$SM" >> $GITHUB_ENV
           echo "$(dirname $SM)" >> $GITHUB_PATH
 
-      - name: Install only needed packages (skip 'tools')
+      - name: [B] Install packages (log full)
         run: |
-          set -e
+          set -x
           yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-          "$SDKMANAGER" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;21.4.7075529" "cmake;3.22.1"
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;21.4.7075529" "cmake;3.22.1" 2>&1 | tee sdk_install.log
+          echo "EXIT=$?"
           echo "ANDROID_NDK=$ANDROID_HOME/ndk/21.4.7075529" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/21.4.7075529" >> $GITHUB_ENV
           ls "$ANDROID_HOME/ndk" || true
           ls "$ANDROID_HOME/build-tools" || true
+          ls "$ANDROID_HOME/cmake" || true
 
-      - name: local.properties
+      - name: [C] local.properties
         run: |
+          set -x
           echo "sdk.dir=$ANDROID_HOME" > local.properties
           echo "ndk.dir=$ANDROID_HOME/ndk/21.4.7075529" >> local.properties
           cat local.properties
 
-      - name: Restore keystore
+      - name: [D] Restore keystore
         run: |
-          set -e
+          set -x
           mkdir -p /root/owpengram-keystore
           if [ -n "${{ secrets.OWPENGRAM_KEYSTORE_B64 }}" ]; then
             echo "${{ secrets.OWPENGRAM_KEYSTORE_B64 }}" | base64 -d > /root/owpengram-keystore/owpengram.jks
@@ -65,11 +66,23 @@ jobs:
           fi
           ls -la /root/owpengram-keystore/
 
-      - name: chmod gradlew
-        run: chmod +x gradlew
-
-      - name: Build arm64 signed APK
+      - name: [E] chmod gradlew
         run: |
+          set -x
+          chmod +x gradlew
+          ./gradlew --version
+
+      - name: [F] Configure (dry) — log full
+        run: |
+          set -x
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace -m :TMessagesProj_AppStandalone:assembleRelease 2>&1 | tee configure.log
+          echo "EXIT=$?"
+
+      - name: [G] Build arm64 signed APK — log full
+        if: success()
+        run: |
+          set -x
           set -o pipefail
           ./gradlew --no-daemon --stacktrace \
             -Pandroid.injected.signing.store.file=/root/owpengram-keystore/owpengram.jks \
@@ -78,9 +91,10 @@ jobs:
             -Pandroid.injected.signing.key.password=owpengram123 \
             :TMessagesProj_AppStandalone:assembleRelease 2>&1 | tee build.log
 
-      - name: Verify + collect
+      - name: [H] Verify + collect
         if: always()
         run: |
+          set -x
           find . -name "*.apk" -type f | tee apks.txt
           APK=$(head -1 apks.txt || true)
           if [ -n "$APK" ]; then
@@ -99,9 +113,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: build-log
+          name: build-logs-full
           path: |
             build.log
+            configure.log
+            sdk_install.log
             apk_verify.txt
             apks.txt
             local.properties
