@@ -1,8 +1,9 @@
-name: Build Telegram APK (arm64 signed)
+name: Build Telegram APK arm64 signed
 on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -18,16 +19,20 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: [A] Prepare SDK dirs
+      - name: A-Prepare-SDK-dirs
+        shell: bash
         run: |
           set -x
           SDK="/usr/local/lib/android/sdk"
-          echo "ANDROID_HOME=$SDK" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=$SDK" >> $GITHUB_ENV
-          ls "$SDK" || true
+          {
+            echo "ANDROID_HOME=$SDK"
+            echo "ANDROID_SDK_ROOT=$SDK"
+          } >> "$GITHUB_ENV"
           mkdir -p "$SDK/ndk" "$SDK/cmake"
+          ls "$SDK"
 
-      - name: [B] Download NDK r21e directly (no sdkmanager)
+      - name: B-Download-NDK-r21e
+        shell: bash
         run: |
           set -x
           NDK_DIR="$ANDROID_HOME/ndk/21.4.7075529"
@@ -39,72 +44,83 @@ jobs:
             rm -f android-ndk-r21e-linux-x86_64.zip
           fi
           ls "$NDK_DIR" | head -20
-          "$NDK_DIR/ndk-build" --version 2>&1 | head -5 || true
-          echo "ANDROID_NDK=$NDK_DIR" >> $GITHUB_ENV
-          echo "ANDROID_NDK_HOME=$NDK_DIR" >> $GITHUB_ENV
+          {
+            echo "ANDROID_NDK=$NDK_DIR"
+            echo "ANDROID_NDK_HOME=$NDK_DIR"
+          } >> "$GITHUB_ENV"
 
-      - name: [C] Download CMake 3.22.1 directly
+      - name: C-Download-CMake-3-22-1
+        shell: bash
         run: |
           set -x
           CMAKE_DIR="$ANDROID_HOME/cmake/3.22.1"
           if [ ! -d "$CMAKE_DIR" ]; then
             cd /tmp
             wget -q https://dl.google.com/android/repository/cmake-3.22.1-linux.zip
+            rm -rf /tmp/cmake_extract
             unzip -q cmake-3.22.1-linux.zip -d /tmp/cmake_extract
             mkdir -p "$CMAKE_DIR"
             mv /tmp/cmake_extract/* "$CMAKE_DIR/"
             rm -rf /tmp/cmake_extract cmake-3.22.1-linux.zip
           fi
-          ls "$CMAKE_DIR/bin" | head
           "$CMAKE_DIR/bin/cmake" --version
 
-      - name: [D] Install platform-tools + platforms + build-tools (only these)
+      - name: D-Install-platform-and-buildtools
+        shell: bash
         run: |
           set -x
           SM=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -1)
           echo "SM=$SM"
-          [ -x "$SM" ] || { echo "sdkmanager not found"; exit 1; }
+          if [ -z "$SM" ]; then echo "sdkmanager not found"; exit 1; fi
           yes | "$SM" --licenses >/dev/null 2>&1 || true
-          "$SM" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" 2>&1 | tee /tmp/sdk_install.log || true
+          "$SM" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" || true
           ls "$ANDROID_HOME/platforms" || true
           ls "$ANDROID_HOME/build-tools" || true
 
-      - name: [E] local.properties
+      - name: E-local-properties
+        shell: bash
         run: |
           set -x
-          echo "sdk.dir=$ANDROID_HOME" > local.properties
-          echo "ndk.dir=$ANDROID_HOME/ndk/21.4.7075529" >> local.properties
+          {
+            echo "sdk.dir=$ANDROID_HOME"
+            echo "ndk.dir=$ANDROID_HOME/ndk/21.4.7075529"
+          } > local.properties
           cat local.properties
 
-      - name: [F] Restore keystore
+      - name: F-Restore-keystore
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.OWPENGRAM_KEYSTORE_B64 }}
         run: |
           set -x
           mkdir -p /root/owpengram-keystore
-          if [ -n "${{ secrets.OWPENGRAM_KEYSTORE_B64 }}" ]; then
-            echo "${{ secrets.OWPENGRAM_KEYSTORE_B64 }}" | base64 -d > /root/owpengram-keystore/owpengram.jks
+          if [ -n "${KEYSTORE_B64:-}" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 -d > /root/owpengram-keystore/owpengram.jks
           else
             keytool -genkeypair -v \
               -keystore /root/owpengram-keystore/owpengram.jks \
               -alias owpengram -keyalg RSA -keysize 2048 -validity 10000 \
               -storepass owpengram123 -keypass owpengram123 \
-              -dname "CN=owpengram, OU=Dev, O=owpengram, L=NA, S=NA, C=IR"
+              -dname "CN=owpengram,OU=Dev,O=owpengram,L=NA,S=NA,C=IR"
           fi
           ls -la /root/owpengram-keystore/
 
-      - name: [G] chmod + gradle version
+      - name: G-chmod-gradlew
+        shell: bash
         run: |
           set -x
           chmod +x gradlew
           ./gradlew --version
 
-      - name: [H] Configure dry run
+      - name: H-Configure-dry-run
+        shell: bash
         run: |
           set -x
           set -o pipefail
           ./gradlew --no-daemon --stacktrace -m :TMessagesProj_AppStandalone:assembleRelease 2>&1 | tee configure.log
 
-      - name: [I] Build arm64 signed APK
-        if: success()
+      - name: I-Build-APK
+        shell: bash
         run: |
           set -x
           set -o pipefail
@@ -115,27 +131,30 @@ jobs:
             -Pandroid.injected.signing.key.password=owpengram123 \
             :TMessagesProj_AppStandalone:assembleRelease 2>&1 | tee build.log
 
-      - name: [J] Verify + collect
+      - name: J-Verify-collect
         if: always()
+        shell: bash
         run: |
           set -x
-          find . -name "*.apk" -type f | tee apks.txt
+          find . -name '*.apk' -type f | tee apks.txt
           APK=$(head -1 apks.txt || true)
-          if [ -n "$APK" ]; then
+          if [ -n "${APK:-}" ]; then
             "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$APK" 2>&1 | tee apk_verify.txt || true
             ls -la "$APK"
-            "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$APK" 2>&1 | grep -E "package:|native-code" | tee -a apk_verify.txt || true
+            "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$APK" 2>&1 | grep -E 'package:|native-code' | tee -a apk_verify.txt || true
           fi
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload-APK
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: apk-arm64-signed
-          path: "**/*.apk"
+          path: '**/*.apk'
           if-no-files-found: warn
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload-logs
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: build-logs-full
           path: |
