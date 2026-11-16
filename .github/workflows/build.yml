@@ -6,7 +6,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,27 +36,28 @@ jobs:
           echo "ANDROID_NDK=$ANDROID_HOME/ndk/21.4.7075529" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/21.4.7075529" >> $GITHUB_ENV
 
-      - name: Decode keystore from secrets
+      - name: Restore keystore from secret
         run: |
           set -e
           mkdir -p /root/owpengram-keystore
-          if [ -n "${KEYSTORE_B64:-}" ]; then
-            echo "$KEYSTORE_B64" | base64 -d > /root/owpengram-keystore/owpengram.jks
+          if [ -n "${{ secrets.OWPENGRAM_KEYSTORE_B64 }}" ]; then
+            echo "${{ secrets.OWPENGRAM_KEYSTORE_B64 }}" | base64 -d > /root/owpengram-keystore/owpengram.jks
             echo "keystore restored from secret"
           else
-            # موقت اگر secret تنظیم نشده (فقط برای تست بیلد)
             keytool -genkeypair -v \
               -keystore /root/owpengram-keystore/owpengram.jks \
               -alias owpengram -keyalg RSA -keysize 2048 -validity 10000 \
               -storepass owpengram123 -keypass owpengram123 \
               -dname "CN=owpengram, OU=Dev, O=owpengram, L=NA, S=NA, C=IR"
-            echo "generated temp keystore (set KEYSTORE_B64 secret for stable signing)"
+            echo "generated temp keystore"
           fi
-        env:
-          KEYSTORE_B64: ${{ secrets.OWPENGRAM_KEYSTORE_B64 }}
+          ls -la /root/owpengram-keystore/
 
       - name: chmod gradlew
         run: chmod +x gradlew
+
+      - name: Show release variants available
+        run: ./gradlew tasks --all 2>&1 | grep -iE "assemble.*Standalone.*Release|assemble.*Release" | head -20 | tee variants.txt || true
 
       - name: Build arm64 signed APK
         env:
@@ -77,6 +78,20 @@ jobs:
         if: always()
         run: find . -name "*.apk" -type f | tee apks.txt
 
+      - name: Verify APK signature
+        if: always()
+        run: |
+          APK=$(find . -name "*Standalone*release*.apk" -o -name "*standalone*release*.apk" | head -1)
+          if [ -n "$APK" ]; then
+            APK_PATH=$APK
+            $ANDROID_HOME/build-tools/34.0.0/apksigner verify --print-certs "$APK" 2>&1 | tee apk_verify.txt || true
+            echo "APK: $APK"
+            ls -la "$APK"
+            $ANDROID_HOME/build-tools/34.0.0/aapt dump badging "$APK" 2>&1 | grep -E "package:|native-code" | head -3 || true
+          else
+            echo "هیچ APK Standalone Release پیدا نشد"
+          fi
+
       - name: Upload APK
         if: always()
         uses: actions/upload-artifact@v4
@@ -90,4 +105,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: build.log
+          path: |
+            build.log
+            apk_verify.txt
+            variants.txt
+          if-no-files-found: warn
