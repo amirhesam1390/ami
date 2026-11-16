@@ -23,6 +23,15 @@ dependencies {
 }
 
 android {
+    signingConfigs {
+        owpengram {
+            storeFile file("/root/owpengram-keystore/owpengram.jks")
+            storePassword "owpengram123"
+            keyAlias "owpengram"
+            keyPassword "owpengram123"
+        }
+    }
+
     namespace 'org.telegram.messenger.web'
 
     compileSdkVersion 33
@@ -49,26 +58,15 @@ android {
         coreLibraryDesugaringEnabled true
     }
 
-    signingConfigs {
-        debug {
-            storeFile file("../TMessagesProj/config/release.keystore")
-            storePassword RELEASE_STORE_PASSWORD
-            keyAlias RELEASE_KEY_ALIAS
-            keyPassword RELEASE_KEY_PASSWORD
-        }
+    
 
+    buildTypes {
         release {
             signingConfig signingConfigs.owpengram
             minifyEnabled false
             shrinkResources false
-            storeFile file("../TMessagesProj/config/release.keystore")
-            storePassword RELEASE_STORE_PASSWORD
-            keyAlias RELEASE_KEY_ALIAS
-            keyPassword RELEASE_KEY_PASSWORD
         }
-    }
 
-    buildTypes {
         debug {
             debuggable true
             jniDebuggable true
@@ -82,7 +80,7 @@ android {
         standalone {
             debuggable false
             jniDebuggable false
-            signingConfig signingConfigs.release
+            signingConfig signingConfigs.owpengram
             applicationIdSuffix ".web"
             minifyEnabled true
             multiDexEnabled true
