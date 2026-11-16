@@ -18,40 +18,65 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: [A] Locate SDK + sdkmanager
+      - name: [A] Prepare SDK dirs
         run: |
           set -x
-          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          echo "SDK=$SDK"
-          ls "$SDK" || true
+          SDK="/usr/local/lib/android/sdk"
           echo "ANDROID_HOME=$SDK" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$SDK" >> $GITHUB_ENV
-          SM=$(find "$SDK/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -1)
-          echo "SDKMANAGER=$SM"
-          [ -n "$SM" ] || { echo "sdkmanager پیدا نشد"; exit 1; }
-          echo "SDKMANAGER=$SM" >> $GITHUB_ENV
-          echo "$(dirname $SM)" >> $GITHUB_PATH
+          ls "$SDK" || true
+          mkdir -p "$SDK/ndk" "$SDK/cmake"
 
-      - name: [B] Install packages (log full)
+      - name: [B] Download NDK r21e directly (no sdkmanager)
         run: |
           set -x
-          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-          "$SDKMANAGER" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;21.4.7075529" "cmake;3.22.1" 2>&1 | tee sdk_install.log
-          echo "EXIT=$?"
-          echo "ANDROID_NDK=$ANDROID_HOME/ndk/21.4.7075529" >> $GITHUB_ENV
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/21.4.7075529" >> $GITHUB_ENV
-          ls "$ANDROID_HOME/ndk" || true
-          ls "$ANDROID_HOME/build-tools" || true
-          ls "$ANDROID_HOME/cmake" || true
+          NDK_DIR="$ANDROID_HOME/ndk/21.4.7075529"
+          if [ ! -d "$NDK_DIR" ]; then
+            cd /tmp
+            wget -q https://dl.google.com/android/repository/android-ndk-r21e-linux-x86_64.zip
+            unzip -q android-ndk-r21e-linux-x86_64.zip
+            mv android-ndk-r21e "$NDK_DIR"
+            rm -f android-ndk-r21e-linux-x86_64.zip
+          fi
+          ls "$NDK_DIR" | head -20
+          "$NDK_DIR/ndk-build" --version 2>&1 | head -5 || true
+          echo "ANDROID_NDK=$NDK_DIR" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> $GITHUB_ENV
 
-      - name: [C] local.properties
+      - name: [C] Download CMake 3.22.1 directly
+        run: |
+          set -x
+          CMAKE_DIR="$ANDROID_HOME/cmake/3.22.1"
+          if [ ! -d "$CMAKE_DIR" ]; then
+            cd /tmp
+            wget -q https://dl.google.com/android/repository/cmake-3.22.1-linux.zip
+            unzip -q cmake-3.22.1-linux.zip -d /tmp/cmake_extract
+            mkdir -p "$CMAKE_DIR"
+            mv /tmp/cmake_extract/* "$CMAKE_DIR/"
+            rm -rf /tmp/cmake_extract cmake-3.22.1-linux.zip
+          fi
+          ls "$CMAKE_DIR/bin" | head
+          "$CMAKE_DIR/bin/cmake" --version
+
+      - name: [D] Install platform-tools + platforms + build-tools (only these)
+        run: |
+          set -x
+          SM=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -1)
+          echo "SM=$SM"
+          [ -x "$SM" ] || { echo "sdkmanager not found"; exit 1; }
+          yes | "$SM" --licenses >/dev/null 2>&1 || true
+          "$SM" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" 2>&1 | tee /tmp/sdk_install.log || true
+          ls "$ANDROID_HOME/platforms" || true
+          ls "$ANDROID_HOME/build-tools" || true
+
+      - name: [E] local.properties
         run: |
           set -x
           echo "sdk.dir=$ANDROID_HOME" > local.properties
           echo "ndk.dir=$ANDROID_HOME/ndk/21.4.7075529" >> local.properties
           cat local.properties
 
-      - name: [D] Restore keystore
+      - name: [F] Restore keystore
         run: |
           set -x
           mkdir -p /root/owpengram-keystore
@@ -66,20 +91,19 @@ jobs:
           fi
           ls -la /root/owpengram-keystore/
 
-      - name: [E] chmod gradlew
+      - name: [G] chmod + gradle version
         run: |
           set -x
           chmod +x gradlew
           ./gradlew --version
 
-      - name: [F] Configure (dry) — log full
+      - name: [H] Configure dry run
         run: |
           set -x
           set -o pipefail
           ./gradlew --no-daemon --stacktrace -m :TMessagesProj_AppStandalone:assembleRelease 2>&1 | tee configure.log
-          echo "EXIT=$?"
 
-      - name: [G] Build arm64 signed APK — log full
+      - name: [I] Build arm64 signed APK
         if: success()
         run: |
           set -x
@@ -91,7 +115,7 @@ jobs:
             -Pandroid.injected.signing.key.password=owpengram123 \
             :TMessagesProj_AppStandalone:assembleRelease 2>&1 | tee build.log
 
-      - name: [H] Verify + collect
+      - name: [J] Verify + collect
         if: always()
         run: |
           set -x
@@ -117,7 +141,6 @@ jobs:
           path: |
             build.log
             configure.log
-            sdk_install.log
             apk_verify.txt
             apks.txt
             local.properties
