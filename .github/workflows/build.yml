@@ -1,4 +1,4 @@
-name: Build Telegram APK
+name: Build Telegram APK (arm64 signed)
 on:
   push:
     branches: [ main, master ]
@@ -18,7 +18,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK (manual)
+      - name: Setup Android SDK
         run: |
           set -e
           export ANDROID_HOME=$HOME/android-sdk
@@ -30,45 +30,64 @@ jobs:
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline.zip
           unzip -q cmdline.zip -d $ANDROID_HOME/cmdline-tools
           mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
-          export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;21.4.7075529" "cmake;3.22.1"
           echo "ANDROID_NDK=$ANDROID_HOME/ndk/21.4.7075529" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/21.4.7075529" >> $GITHUB_ENV
 
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*','**/gradle-wrapper.properties') }}
+      - name: Decode keystore from secrets
+        run: |
+          set -e
+          mkdir -p /root/owpengram-keystore
+          if [ -n "${KEYSTORE_B64:-}" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > /root/owpengram-keystore/owpengram.jks
+            echo "keystore restored from secret"
+          else
+            # موقت اگر secret تنظیم نشده (فقط برای تست بیلد)
+            keytool -genkeypair -v \
+              -keystore /root/owpengram-keystore/owpengram.jks \
+              -alias owpengram -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass owpengram123 -keypass owpengram123 \
+              -dname "CN=owpengram, OU=Dev, O=owpengram, L=NA, S=NA, C=IR"
+            echo "generated temp keystore (set KEYSTORE_B64 secret for stable signing)"
+          fi
+        env:
+          KEYSTORE_B64: ${{ secrets.OWPENGRAM_KEYSTORE_B64 }}
 
       - name: chmod gradlew
         run: chmod +x gradlew
 
-      - name: Show tasks
-        run: ./gradlew tasks --all 2>&1 | tee tasks.log | grep -iE "assemble.*elease" | head -30 || true
-
-      - name: Build APK
+      - name: Build arm64 signed APK
+        env:
+          OWPENGRAM_KEYSTORE: /root/owpengram-keystore/owpengram.jks
+          OWPENGRAM_STOREPASS: ${{ secrets.OWPENGRAM_STOREPASS || 'owpengram123' }}
+          OWPENGRAM_KEYALIAS: ${{ secrets.OWPENGRAM_KEYALIAS || 'owpengram' }}
+          OWPENGRAM_KEYPASS: ${{ secrets.OWPENGRAM_KEYPASS || 'owpengram123' }}
         run: |
           set -o pipefail
-          ./gradlew --no-daemon --stacktrace --info assembleRelease 2>&1 | tee build_full.log
+          ./gradlew --no-daemon --stacktrace \
+            -Pandroid.injected.signing.store.file=/root/owpengram-keystore/owpengram.jks \
+            -Pandroid.injected.signing.store.password=owpengram123 \
+            -Pandroid.injected.signing.key.alias=owpengram \
+            -Pandroid.injected.signing.key.password=owpengram123 \
+            :TMessagesProj_AppStandalone:assembleRelease 2>&1 | tee build.log
 
-      - name: Upload logs
+      - name: Find APK
+        if: always()
+        run: find . -name "*.apk" -type f | tee apks.txt
+
+      - name: Upload APK
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs
-          path: |
-            build_full.log
-            tasks.log
-
-      - name: Upload APKs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: apks
+          name: apk-arm64-signed
           path: "**/*.apk"
           if-no-files-found: warn
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
