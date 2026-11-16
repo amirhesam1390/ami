@@ -58,7 +58,7 @@ jobs:
         android.enableJetifier=false
         EOF
 
-    - name: Build APK
+    - name: Build APK (arm64-v8a)
       run: |
         ./gradlew TMessagesProj:assembleAfatRelease -Parm64-v8a --stacktrace 2>&1 | tail -200
 
